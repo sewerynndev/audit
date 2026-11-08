@@ -1,7 +1,12 @@
 package org.hibernate.bugs;
 
+import jakarta.persistence.ElementCollection;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.ManyToMany;
+import org.hibernate.annotations.Audited;
+import org.hibernate.audit.AuditLogFactory;
 import org.hibernate.cfg.AvailableSettings;
-
 import org.hibernate.testing.orm.junit.DomainModel;
 import org.hibernate.testing.orm.junit.ServiceRegistry;
 import org.hibernate.testing.orm.junit.SessionFactory;
@@ -9,47 +14,57 @@ import org.hibernate.testing.orm.junit.SessionFactoryScope;
 import org.hibernate.testing.orm.junit.Setting;
 import org.junit.jupiter.api.Test;
 
-/**
- * This template demonstrates how to develop a test case for Hibernate ORM, using its built-in unit test framework.
- * Although ORMStandaloneTestCase is perfectly acceptable as a reproducer, usage of this class is much preferred.
- * Since we nearly always include a regression test with bug fixes, providing your reproducer using this method
- * simplifies the process.
- * <p>
- * What's even better?  Fork hibernate-orm itself, add your test case directly to a module's unit tests, then
- * submit it as a PR!
- */
-@DomainModel(
-		annotatedClasses = {
-				// Add your entities here.
-				// Foo.class,
-				// Bar.class
-		},
-		// If you use *.hbm.xml mappings, instead of annotations, add the mappings here.
-		xmlMappings = {
-				// "org/hibernate/test/Foo.hbm.xml",
-				// "org/hibernate/test/Bar.hbm.xml"
-		}
-)
-@ServiceRegistry(
-		// Add in any settings that are specific to your test.  See resources/hibernate.properties for the defaults.
-		settings = {
-				// For your own convenience to see generated queries:
-				@Setting(name = AvailableSettings.SHOW_SQL, value = "true"),
-				@Setting(name = AvailableSettings.FORMAT_SQL, value = "true"),
-				// @Setting( name = AvailableSettings.GENERATE_STATISTICS, value = "true" ),
+import java.util.HashSet;
+import java.util.Set;
 
-				// Add your own settings that are a part of your quarkus configuration:
-				// @Setting( name = AvailableSettings.SOME_CONFIGURATION_PROPERTY, value = "SOME_VALUE" ),
-		}
-)
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+@DomainModel(annotatedClasses = {ORMUnitTestCase.Item.class, ORMUnitTestCase.Tag.class})
+@ServiceRegistry(settings = {
+        @Setting(name = AvailableSettings.SHOW_SQL, value = "true"),
+        @Setting(name = AvailableSettings.FORMAT_SQL, value = "true")
+})
 @SessionFactory
 class ORMUnitTestCase {
 
-	// Add your tests, using standard JUnit 5.
-	@Test
-	void hhh123Test(SessionFactoryScope scope) throws Exception {
-		scope.inTransaction( session -> {
-			// Do stuff...
-		} );
-	}
+    @Test
+    void deletedRecordKeepsCollections(SessionFactoryScope scope) {
+        scope.inTransaction(session -> {
+            var tag = new Tag();
+            tag.id = 1L;
+            session.persist(tag);
+            var item = new Item();
+            item.id = 1L;
+            item.labels.add("a");
+            item.tags.add(tag);
+            session.persist(item);
+        });
+        scope.inTransaction(session -> session.remove(session.find(Item.class, 1L)));
+
+        try (var auditLog = AuditLogFactory.create(scope.getSessionFactory())) {
+            var deleteChangeset = auditLog.getChangesets(Item.class, 1L).get(1);
+            var deleted = auditLog.find(Item.class, 1L, deleteChangeset, true);
+
+            assertEquals(Set.of("a"), deleted.labels);
+            assertEquals(1, deleted.tags.size());
+        }
+    }
+
+    @Entity(name = "Item")
+    @Audited
+    static class Item {
+        @Id
+        Long id;
+        @ElementCollection
+        Set<String> labels = new HashSet<>();
+        @ManyToMany
+        Set<Tag> tags = new HashSet<>();
+    }
+
+    @Entity(name = "Tag")
+    @Audited
+    static class Tag {
+        @Id
+        Long id;
+    }
 }
